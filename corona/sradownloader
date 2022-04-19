@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+
+#############################################################################
+#    Copyright 2020 Simon Andrews
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+############################################################################
+
+
+import sys
+import subprocess
+import os
+import csv
+import argparse
+import glob
+import urllib.request
+import re
+import shutil
+import threading
+from ftplib import FTP
+
+
+VERSION = "3.9"
+
+# These are the symbols we're going to need to remove
+# from any proposed file names
+invalid_characters = [" ","/",">","<","|","\"","?","*","(",")","\\","[","]","{","}","!"]
+
+
+def download_sample_ena (sample, options):
+    if not options.quiet:
+        print (f"[ENA] Downloading {sample['accession']} into {sample['file_base']}", flush=True)
+
+    # Get the FTP locations for the sample
+    ena_rest_url = f"https://www.ebi.ac.uk/ena/portal/api/filereport?accession={sample['accession']}&result=read_run&fields=run_accession,fastq_ftp"
+
+    with urllib.request.urlopen(ena_rest_url) as response:
+        if response.getcode() != 200:
+            raise IOError(f"[ENA] Got error code {response.getcode()} from ENA REST for accession {sample['accession']}")
+
+        url_list = []
+
+        found_accession_line = False
+
+        for line in response:
+            line = line.decode("UTF-8").strip()
+            print(line)
+            if line.startswith("SRR") or line.startswith("ERR"):
+                found_accession_line = True
+                sections = line.split("\t")
+
+                if len(sections) != 2:
+                    raise IOError(f"[ENA] No ENA fastq files found for accession {sample['accession']}")
+
+                url_list = sections[1].split(";")
+                break
+
+        if not found_accession_line:
+            raise IOError(f"[ENA] Found no accession in response from ENA REST for accession {sample['accession']}")
+
+
+    for url in url_list:
+
+        # We need to extract the various sections from the URL.  This will be the server,
+        # the folder and the file
+        url_sections = url.split("/")
+        server = url_sections[0]
+        file = url_sections[-1]
+        folder = "/".join(url_sections[1:-1])
+
+        #print(f"URL is {url} server={server} folder={folder} file={file}")
+
+        # Work out the output file name.  We're assuming there's never
+        # going to be more than 2 files per sample
+        if url.endswith("_2.fastq.gz"):
+            outfile=sample['file_base'] + "_2.fastq.gz"
+
+        else:
+            outfile=sample['file_base'] + "_1.fastq.gz"
+
+        if options.outdir != ".":
+            outfile = f"{options.outdir}/{outfile}"
+
+        # Check if the output file already exists. If it does then don't overwrite
+        # unless --force has been specified
+        if os.path.exists(outfile) and os.path.getsize(outfile) > 0:
+            if not options.force:
+                if not options.quiet:
+                    print (f"Skipping {url} as outfile {outfile} exists (override with --force)", flush=True)
+                continue
+                
+        attempt_number = 1
+
+        while (attempt_number <= options.retries):
+            if not options.quiet:
+                print (f"[ENA Attempt {attempt_number}] Downloading {url} into {outfile}", flush=True)
+        
+            try:
+                #print(f"Connecting to {server}")
+                ftp = FTP(server)
+                #print(f"Logging in")
+                ftp.login()
+                #print(f"Moving to {folder}")
+                ftp.cwd(folder)
+
+                # We had problems with a simple retbinary causing the control channel to time
+                # out as the transfer took so long so we're going with this more complicated
+                # multithreaded version where we have one thread doing the download and another
+                # sending NOOP commands down the control channel every minute to keep it alive.
+                # Let's see if this fixes things.
+
+                with open(outfile, 'wb') as ftp_out:
+                    sock = ftp.transfercmd('RETR ' + file)
+                    def background():
+                        while True:
+                            block = sock.recv(1024*1024)
+                            if not block:
+                                break
+                            ftp_out.write(block)
+                        sock.close()
+                    t = threading.Thread(target=background)
+                    t.start()
+                    while t.is_alive():
+                        t.join(60)
+                        ftp.voidcmd('NOOP')
+                    
+                    #print(f"Retrieving {file}")
+                
+                ftp.quit()
+
+                # Check that the file we downloaded had a non-zero size
+                if os.stat(outfile).st_size == 0:
+                    # It thinks it worked, but nothing was downloaded
+                    os.unlink(outfile)
+                    raise IOError("Received zero sized file")
+
+            except Exception as ex:
+                print(ex)
+                if attempt_number == options.retries:
+                    attempt_number += 1
+                    raise IOError(f"[ENA] Download repeatedly failed for {sample['accession']} - giving up")
+
+                else:
+                    print(f"[ENA] Download failed for {sample['accession']} - going around for another try", flush=True)
+                    attempt_number += 1
+                    continue
+
+            # It worked
+            break
+
+
+def download_sample_ncbi (sample, options):
+    if not options.quiet:
+        print (f"[NCBI] Downloading {sample['accession']} into {sample['file_base']}", flush=True)
+
+
+    # We add the --include-technical because 10X runs mark the essential barcode
+    # reads as technical and don't download them otherwise.
+    command_options = [options.fqdump,"--split-files", "--split-3", "--include-technical", "--threads",options.threads,"--temp",options.outdir,"--outfile",sample["file_base"]+".fastq"]
+    
+
+    # If they're attached to a terminal and they're not being quiet then we'll show progress
+
+    if not options.quiet:
+        if sys.stdin.isatty():
+            command_options.append("--progress")
+    
+    # If they're not using the current directory as output we'll say where it should go
+    if options.outdir != ".":
+        command_options.append("--outdir")
+        command_options.append(options.outdir)
+
+    # Finally add the accession
+    command_options.append(sample['accession'])
+    
+    command_options = [str(x) for x in command_options]
+
+    attempt_number = 1
+
+    while (attempt_number <= options.retries):
+        if not options.quiet:
+            print(f"[NCBI Attempt {attempt_number}] Running: "+" ".join(command_options), flush=True)
+
+        result = subprocess.run(command_options, check=False)
+
+        if result.returncode != 0:
+            if attempt_number == options.retries:
+                attempt_number += 1
+                raise IOError(f"[NCBI] Sorry SRAtoolkit just isn't having it, giving up on {sample['accession']}")
+
+            else:
+                print(f"[NCBI] SRAtoolkit failed us - going around for another try", flush=True)
+                attempt_number += 1
+                continue
+
+        else:
+            # Amazingly it worked
+            break
+
+    if attempt_number > options.retries:
+        # This failed so don't try to do anything else with it
+        return
+
+    # Now find the files which were created and compress them
+    downloaded_files = glob.glob(options.outdir+"/"+sample['file_base']+"*.fastq")
+
+    if len(downloaded_files) == 0:
+        raise IOError(f"[NCBI] Got no files for accession {sample['accession']}")
+
+    for file in downloaded_files:
+        if not options.quiet:
+                print("Compressing "+file, flush=True)
+
+        subprocess.run(["gzip","-4",file], check=True)
+
+
+def get_geo_name (srr_number, options):
+    sample_name = ""
+
+    if not options.quiet:
+        print(f"Trying to get name for {srr_number} from GEO", flush=True)
+
+    with urllib.request.urlopen(f"https://www.ncbi.nlm.nih.gov/sra/?term={srr_number}&format=text") as response:
+        for line in response:
+            line = line.decode("UTF-8")
+            if line.startswith("Title:"):
+                line = line.strip()
+                geosections = re.split("[:; ,]+",line)
+
+                sample_name = "_".join(geosections[1:])
+                break
+
+    return sample_name
+
+
+def read_samples (options):
+    if not options.quiet:
+        print(f"Reading samples from {options.runtable}", flush=True)
+
+    sample_file = options.runtable
+    samples = []
+    headers = []
+    name_index = 0
+
+    # The sample_file might be one of three things
+    # 1. An SRA RunTable file
+    # 2. A simple file of SRR/ERR accessions
+    # 3. An SRR/ERR accession (not a file name)
+    # 
+    # We need to account for all of these
+
+    try:
+        with open(sample_file) as fh:
+            csv_fh = csv.reader(fh)
+            name_index = -1
+            for sections in csv_fh:
+                # Skip blank lines
+                if len(sections) == 0:
+                    continue
+
+                sections[0] = sections[0].strip()
+
+                # The first line should be the headers. We'll check for the name
+                # so we don't inadvertently skip a data line if the header is missing
+                if len(headers) == 0 and sections[0] == "Run":
+                    headers = sections
+                    if "source_name" in headers:
+                        name_index = headers.index("source_name")
+
+                    continue
+
+                sample_name = ""
+
+                # Check to see if there's another set of headers in the middle of the file
+                if sections[0] == "Run":
+                    continue
+
+                # See if we need to look up a nice name from GEO (SRA)
+                if not options.nogeo :
+                    sample_name = get_geo_name(sections[0], options)
+
+                if sample_name == "":
+                    if name_index >= 0:
+                        sample_name = sections[name_index].strip()
+
+                for bad_char in invalid_characters:
+                    sample_name = sample_name.replace(bad_char,"_")
+
+                # Add a leading underscore to separate it from the accession
+                sample_name = "_"+sample_name
+
+                # Clean up any runs of underscores
+                while "__" in sample_name:
+                    sample_name = sample_name.replace("__","_")
+
+                if not options.quiet:
+                    print (f"Found sample {sections[0]} with basename {sections[0]}{sample_name}", flush=True)
+
+                sample = {
+                    "accession" : sections[0],
+                    "file_base" : sections[0] + sample_name
+                }
+
+                samples.append(sample)
+
+    except FileNotFoundError as err:
+        # This could be a bare accession
+        if sample_file.startswith("SRR") or sample_file.startswith("ERR") or sample_file.startswith('SRX'):
+            sample_name = ""
+            if not options.nogeo :
+                sample_name = get_geo_name(sample_file, options)
+
+            if len(sample_name) > 0:
+                sample_name = "_"+sample_name
+
+            samples.append({
+                "accession" : sample_file,
+                "file_base" : sample_file + sample_name
+            })
+
+        else:
+            raise err
+
+    return samples
+
+def read_options():
+    parser = argparse.ArgumentParser(description="Download data from the SRA")
+
+    parser.add_argument('--quiet', dest="quiet", action='store_true', default=False, help="Supress all but essential messages")
+    parser.add_argument('--version', action='version', version=f"SRA downloader v{VERSION}")
+    parser.add_argument('--outdir', type=str, help="Folder to save data to (default .)", default=".")
+    parser.add_argument('--threads', type=int, help="Number of threads (default 1)", default=1)
+    parser.add_argument('--retries', type=int, help="Number of times we'll retry a download before giving up (default 5)", default=5)
+    parser.add_argument('--force', type=int, help="Overwrite output files even if they exist", default=False)
+    parser.add_argument('--fqdump', type=str, help="Path to the fastq dump program (default fasterq-dump)", default="fasterq-dump")
+    parser.add_argument('--nogeo', dest="nogeo", action='store_true', help="Disable sample name lookup from GEO")
+    parser.add_argument('--noena', dest="noena", action='store_true', help="Don't try downloading from ENA")
+    parser.add_argument('--noncbi', dest="noncbi", action='store_true', help="Don't try downloading from NBCI")
+    parser.add_argument('runtable', type=str, help="The SraRunTable.txt file from the SRA run selector")
+
+    options = parser.parse_args()
+
+
+    if not options.noncbi:
+        # Can we find fasterq-dump
+        if not options.quiet:
+            print("Testing for fasterq-dump at "+options.fqdump, flush=True)
+
+        try:
+            subprocess.run([options.fqdump,"--version"], check=True, stdout=subprocess.DEVNULL)
+
+            if not options.quiet:
+                print("Found fasterq-dump at "+options.fqdump, flush=True)
+
+        except:
+            print ("WARNING: Couldn't find fasterq-dump at "+options.fqdump+". Please ensure that sratoolkit is downloaded and that you've run vdb-config if you want to download from NCBI", file=sys.stderr, flush=True)
+            options.noncbi = True
+
+        # Can we find gzip
+        if not options.quiet:
+            print("Testing for gzip in the path", flush=True)
+
+        try:
+            subprocess.run(["gzip","--version"], check=True, stdout=subprocess.DEVNULL)
+
+            if not options.quiet:
+                print("Found gzip", flush=True)
+
+        except:
+            print ("WARNING: Couldn't find gzip in the path - can't download from NCBI without this.", file=sys.stderr, flush=True)
+            options.noncbi = True
+
+
+    if options.noncbi and options.noena:
+        print ("ERROR: Both NCBI and ENA download options are unavailable.  Giving up", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    # Create the output directory if it's not there already
+    if not os.path.isdir(options.outdir):
+        os.makedirs(options.outdir)
+
+
+    return options
+
+
+def main():
+    options = read_options()
+    samples = read_samples(options)
+
+    results = {}
+
+    for sample in samples:
+        try:
+            if options.noena:
+                raise Exception("ENA disabled with --noena, not trying that.")
+            download_sample_ena(sample,options)
+            results[sample['accession']] = "SUCCEEDED"
+
+        except Exception as ex:
+            if options.noncbi:
+                print(f"WARNING: Failed to download via ENA: {ex}. Can't try NCBI - giving up - sorry.", file=sys.stderr, flush=True)
+                results[sample['accession']] = "FAILED"
+
+
+            else:
+                print(f"WARNING: Failed to download via ENA: {ex} trying NCBI instead", file=sys.stderr, flush=True)
+                try:
+                    download_sample_ncbi(sample, options)
+                    results[sample['accession']] = "SUCCEEDED"
+                except Exception as ex2:
+                    print(f"WARNING: Failed to download via NCBI: {ex2}. Giving up - sorry.", file=sys.stderr, flush=True)
+                    results[sample['accession']] = "FAILED"
+
+    
+    if not options.quiet:
+        print(f"\nAll done!\n\nRESULTS\n-------", flush=True)
+        for accession in sorted(results.keys()):
+            print(f"{accession}:\t{results[accession]}", flush=True)
+
+if __name__ == "__main__":
+    main()
