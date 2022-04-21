@@ -1,0 +1,197 @@
+---
+title: "Blast analysis of species removal"
+output: html_notebook
+---
+
+Given a reference tree we ran the final step of r2t using the '--remove_species_mapping' parameter increasing at each iteration the number of species not to be considered to reconstruct our sequence. Therefore at each iteration the closest neighbour is more distantly related to the species we are trying to map. We then use our obtained sequences and blast them against their original OGs containing all the sequences including the species we are trying to map.  
+
+```{r}
+library(ggplot2)
+library(plyr)
+library(reshape2)
+library(base)
+library(grid)
+library(gtable)
+theme_set(
+  theme_light() + theme(legend.position = "top")
+  )
+source("/Users/daviddylus/Dropbox/dessimoz/research/opt/R-pLIBS/ggplot_pLIB.R")
+source("/Users/daviddylus/Dropbox/notebooks/r2t/R/useful_functions.R")
+
+mouset <- read.csv("/Users/daviddylus/Projects/r2t/benchmark/tree/regular/r2t_align_mouse_sp_removal3.csv", header=T, sep=',')
+mouset$species <- 'M. musculus'
+yeastt <- read.csv("//Users/daviddylus/Projects/r2t/benchmark/tree/regular/r2t_align_yeast_sp_removal3.csv", header=T, sep=',')
+yeastt$species <- 'S. cerevisiae'
+aratht <- read.csv("/Users/daviddylus/Projects/r2t/benchmark/tree/regular/r2t_align_arath_sp_removal3.csv", header=T, sep=',')
+aratht$species <- 'A. thaliana'
+
+datat <- rbind(mouset,yeastt,aratht)
+# mouse <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/sp_removal/cov/mouse_sp_removal_bin.csv")
+data <- read.csv("/Users/daviddylus/Projects/r2t/benchmark/blast/r2t_like_shen/r2t_blast_like_shen_individuals_from_original.csv")
+
+data$dist_to_remain_neigh <- 0
+for (i in unique(datat$internode_dist)){
+  for (j in unique(datat$species))
+  data$dist_to_remain_neigh[which(data$inode_dist == i & data$species == j)] <- sort(unique(datat$closest_neighbour_dist[which(datat$species == j)]))[i+1]
+}
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+```{r}
+data <- data[order(data$inode_dist),]
+data$inode_dist <- factor(data$inode_dist, levels = c(0,1,2,3,4,5,6)) # for data data
+head(data)
+```
+# Plot scatter of sc vs pident
+```{r Fig1, echo=TRUE}
+p <- ggplot(data, aes(sc, pident, color=bin)) + geom_point(size=0.5, alpha=0.5)
+p <- p + facet_grid(species+meth~gcov, scales = "free_y")
+p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="Bins")
+p <- p + theme_bw()
+p <- p + theme(legend.position="bottom")
+p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Sequence completeness")
+p <- p + ylab("Percentage identity")
+#pdf("~/Desktop/r2t_seq_bins_data_ill20X_removal.pdf", width = 8, height = 6, useDingbats=FALSE)
+#p <- p + grid.newpage()
+#p <- p + grid.draw(OverlappingStripLabels(p))
+#ggsave(plot=p,height=10,width=9,dpi=200, filename="~/projects/r2t/paper/figure2/Sfig1.pdf", useDingbats=FALSE)
+p <- p + grid.newpage()
+p <- p + grid.draw(OverlappingStripLabels(p))
+```
+
+
+# Plot all removal distances for gcov levels
+
+```{r Fig1, echo=TRUE, fig.height=4, fig.width=4}
+dummy2 <- data.frame(species = c("A. thaliana", "S. cerevisiae", "M. musculus"), Z = c(374, 1112, 698))
+#dummy2 <- data.frame(species = c("S. cerevisiae", "M. musculus"), Z = c(1112, 698))
+p <- ggplot(data, aes(inode_dist)) + geom_bar(aes(fill=bin))
+p <- p + facet_grid(species+meth~gcov, scales = "free_y")
+p <- p + geom_hline(data = dummy2, aes(yintercept = Z), linetype="dashed")
+p <- p + scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="Bins")
+p <- p + theme_bw()
+p <- p + theme(legend.position="bottom")
+p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Internode distance")
+p <- p + ylab("Number of OGs")
+#pdf("~/Desktop/r2t_seq_bins_data_ill20X_removal.pdf", width = 8, height = 6, useDingbats=FALSE)
+p <- p + grid.newpage()
+p <- p + grid.draw(OverlappingStripLabels(p))
+#ggsave(plot=p,height=10,width=9,dpi=200, filename="~/projects/r2t/paper/figure2/Sfig1.pdf", useDingbats=FALSE)
+```
+
+# Plot proportion of reconstructed sites for different distances
+
+```{r}
+tgc <- summarySE(data, measurevar="sc", groupvars=c("species","meth","inode_dist","gcov"))
+head(tgc)
+```
+
+
+```{r Fig2, echo=TRUE, fig.height=4, fig.width=4}
+#dummy2 <- data.frame(species = c("A. thaliana", "S. cerevisiae", "M. musculus"), Z = c(374, 1112, 698))
+#dummy2 <- data.frame(species = c("S. cerevisiae", "M. musculus"), Z = c(1112, 698))
+p <- ggplot(tgc, aes(inode_dist, sc)) + geom_bar(position=position_dodge(), stat="identity")
+p <- p + geom_errorbar(aes(ymin=sc-sd, ymax=sc+sd), size=0.3, width=0.2)
+p <- p + geom_text(data=tgc, aes(x=inode_dist, y=sc+0.5, label=as.factor(N)), position = position_dodge(0.9),
+    vjust = 0.5, angle = 90, size=2)
+p <- p + facet_grid(species+meth~gcov, scales = "free_y")
+#p <- p + geom_hline(data = dummy2, aes(yintercept = Z), linetype="dashed")
+p <- p + scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="Bins")
+p <- p + theme_bw()
+p <- p + theme(legend.position="bottom")
+p <- p + theme_bw()
+p <- p + theme(legend.position="bottom")
+p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Internode distance")
+p <- p + ylab("Proportion of reconstructed sequence")
+#pdf("~/Desktop/r2t_seq_bins_data_ill20X_removal.pdf", width = 8, height = 6, useDingbats=FALSE)
+grid.newpage()
+grid.draw(OverlappingStripLabels(p))
+```
+# Plot scaled PIdent
+
+```{r}
+data$scale_pident = data$pident * data$sc
+head(data)
+```
+```{r Fig3, echo=TRUE, fig.height=4, fig.width=4}
+p <- ggplot(data, aes(inode_dist, scale_pident)) + geom_jitter(aes(color=sc), width = 0.2, height = 0.1, alpha=0.3, size=0.5) + geom_violin(aes(color=scale_pident), fill=NA)
+p <- p + facet_grid(species+meth~gcov)
+p <- p + scale_colour_gradient(name="Obtained/Expected number of ACTG", low = "yellow", high = "red")
+p <- p + theme_bw()
+p <- p + theme(legend.position="bottom")
+p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Distance to closesest remaining species")
+p <- p + ylab("Scaled percentage identity")
+#pdf("~/Desktop/r2ti_seq_bins_jitter.pdf", width = 8, height = 10, useDingbats=FALSE)
+p <- p + grid.newpage()
+p <- p + grid.draw(OverlappingStripLabels(p))
+# ggsave(plot=p,height=10,width=9,dpi=200, filename="~/projects/r2t/paper/figure2/Sfig2.pdf", useDingbats=FALSE)
+p
+```
+
+
+```{r}
+tgc <- summarySE(data[which(data$bin=='sample'),], measurevar="scale_pident", groupvars=c("species","meth","inode_dist","gcov"))
+head(tgc)
+```
+
+
+# Plot reference only
+```{r}
+tgc <- summarySE(data[which(data$bin=='reference'),], measurevar="scale_pident", groupvars=c("species","meth","inode_dist","gcov"))
+head(tgc)
+```
+
+# Plot sc vs pident
+```{r}
+tgp <- summarySE(data[which(data$bin=='sample'),], measurevar="pident", groupvars=c("species","meth","inode_dist","gcov"))
+tgs <- summarySE(data[which(data$bin=='sample'),], measurevar="sc", groupvars=c("species","meth","inode_dist","gcov"))
+head(tgs)
+head(tgp)
+tgp_all <- tgp
+tgp_all$sc <- tgs$sc
+tgp_all$sc_sd <- tgs$sd
+tgp_all$sc_se <- tgs$se
+head(tgp_all)
+tgp_all$proportion_sc <- 0
+tgp_all$proportion_sc[which(tgp_all$species == 'A. thaliana')] = tgp_all$sc[which(tgp_all$species == 'A. thaliana')] * tgp_all$N[which(tgp_all$species == 'A. thaliana')] / 374
+tgp_all$proportion_sc[which(tgp_all$species == 'S. cerevisiae')] = tgp_all$sc[which(tgp_all$species == 'S. cerevisiae')] * tgp_all$N[which(tgp_all$species == 'S. cerevisiae')] / 1112
+tgp_all$proportion_sc[which(tgp_all$species == 'M. musculus')] = tgp_all$sc[which(tgp_all$species == 'M. musculus')] * tgp_all$N[which(tgp_all$species == 'M. musculus')] / 698
+```
+
+```{r Fig61, echo=TRUE, fig.height=4, fig.width=4}
+tgp_all$gcov = as.character(tgp_all$gcov)
+tgp_all$inode_dist = as.character(tgp_all$inode_dist)
+tgp_all$inode_dist = as.factor(tgp_all$inode_dist)
+
+p <- ggplot(tgp_all, aes(sc, pident, shape=gcov)) + geom_path(color='darkgrey') + geom_point(aes(colour=inode_dist), size=2)
+#p <- p +geom_text(aes(y=pident+0.5, label=as.factor(inode_dist)), size=2) 
+p <- p + facet_grid(meth~species, scales='free_y')
+p <- p + scale_shape_manual(values=c(3, 4, 8, 15, 16, 17), name='Coverage')
+p <- p + scale_color_viridis_d()
+#p <- p + geom_hline(data = dummy2, aes(yintercept = Z), linetype="dashed")
+#p <- p + scale_color_manual(values=c("#000000"), name="bin")
+#p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="bin")
+p <- p + theme_bw()
+#p <- p + theme(legend.position="bottom")
+#p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + labs(x="Average porportion of reconstructed sites per OG", y="Average sequence similarity")
+# pdf("~/Desktop/paper/figure2/fig2B.pdf", width = 8, height = 6, useDingbats=FALSE)
+p
+# ggsave(plot=p,height=6,width=8,dpi=200, filename="~/Desktop/paper/figure2/fig2B.pdf", useDingbats=FALSE)
+# ggsave(plot=p,height=5,width=6,dpi=200, filename="~/Desktop/paper/figure2/fig2B.pdf", useDingbats=FALSE)
+```
+
+
+
+```{r}
+sessionInfo()
+devtools::session_info()
+```
+
+

@@ -1,0 +1,63 @@
+```{r}
+library(ggplot2)
+library(plyr)
+library(reshape2)
+library(base)
+library(grid)
+library(gtable)
+theme_set(
+  theme_light() + theme(legend.position = "top")
+  )
+source("/Users/daviddylus/Dropbox/dessimoz/research/opt/R-pLIBS/ggplot_pLIB.R")
+source("/Users/daviddylus/Dropbox/notebooks/r2t/R/useful_functions.R")
+```
+
+
+# Like shen assembly
+
+```{r}
+tgc <- read.csv("/Users/daviddylus/Projects/r2t/benchmark/blast/r2t+assem_concat_alignments_blast_like_shen.csv", header=T, sep=',')
+# tgc <-  read.csv("/Volumes/Recovery/projects/r2t/benchmark/r2t_align/r2t+assem_concat_alignments_blast.csv", header=T, sep=',')
+tgc$coverage <- as.double(tgc$coverage)
+tgc_select <- tgc#[which(tgc$coverage > 4),]
+tgc_select <- tgc_select[order(tgc_select$coverage),]
+tgc_select$coverage <- factor(tgc_select$coverage, levels = c(0.2, 0.5, 1, 5,10,20)) # for data data
+head(tgc_select)
+```
+
+#---------
+# IMPORTANT
+#----------
+```{r}
+# good color ranges: low = "#f29492", high = "#114357" | low = "#6be585", high = "#dd3e54"
+
+#tgc$coverage = as.character(tgc$coverage)
+tgc_select$idist = as.character(tgc_select$idist)
+
+tgc_select_small = tgc_select[which(tgc_select$idist == '0' | tgc_select$idist == '6'), ]
+
+p <- ggplot(tgc_select_small[complete.cases(tgc_select_small),], aes(mlen, pident, group=interaction(idist, method))) + geom_path(aes(linetype=idist),color='grey35') + geom_point(aes(color=method, shape=coverage), size=2) 
+p <- p + scale_y_log10() 
+#p <- p + scale_colour_gradient(name="Percentage\n Identity", low = "#6be585", high = "#dd3e54" , limits=c(50,100))
+# p <- p + scale_linetype_manual(values=c(3, 2, 1), name='Coverage')
+#p <- p + scale_size_manual(values=c(1,2,3), name="bin")
+#p <- p + scale_shape_manual(values=c(48, 49, 50, 51,52,53,54), name="bin")
+p <- p + scale_shape_manual(values=c(15, 16, 17), name="Coverage")
+#p <- p +geom_text(aes(y=pident+0.5, label=as.factor(inode_dist)), size=2) 
+p <- p + facet_grid(tech~species, scale='free_y')
+#p <- p + geom_hline(data = dummy2, aes(yintercept = Z), linetype="dashed")
+#p <- p + scale_color_manual(values=c("#000000"), name="bin")
+#p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="bin")
+p <- p + scale_color_manual(values=c('red', "#56B4E9"), name="Approach")
+p <- p + theme_bw()
+p <- p + theme(legend.position="bottom")
+p <- p + theme(, axis.text.x = element_text(angle = 90), legend.text = element_text(hjust = 1))
+#p <- p + theme(legend.position="right", axis.text.x = element_text(angle = 90))
+#p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + labs(x="Number of aa sites of species in MSA", y="Average blast percentage identity")
+#pdf("~/projects/r2t/paper/figure2/pident_OGs2.pdf", width = 8, height = 6, useDingbats=FALSE)
+p
+ggsave(plot=p,height=5,width=6,dpi=200, filename="~/Desktop/paper/figure3/fig3A.pdf", useDingbats=FALSE)
+```
+
+

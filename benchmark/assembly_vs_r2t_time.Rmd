@@ -1,0 +1,102 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+#r2t Time analysis
+
+```{r echo=FALSE}
+library(ggplot2)
+library(plyr)
+library(reshape2)
+library(base)
+library(grid)
+library(gtable)
+library(ggthemes)
+theme_set(
+  theme_light() + theme(legend.position = "top")
+  )
+# source("/Volumes/Recovery/Dropbox/dessimoz/research/opt/R-pLIBS/ggplot_pLIB.R")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+```{r}
+mapping_ratios <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/all_species_removal_mapping_ratios.csv", header=T, sep=',')
+mapping_ratios$read_ref = mapping_ratios$ref_bp/mapping_ratios$read_bp
+names(mapping_ratios)[3] <- 'dist'
+names(mapping_ratios)[2] <- 'cov'
+arath <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/r2t_align_sp_removal/arath_runtime_full_dist_grouped.csv", header=T, sep=',')
+arath$species = 'A. thaliana'
+mouse <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/r2t_align_sp_removal/yeast_runtime_full_dist_grouped.csv", header=T, sep=',')
+mouse$species = 'M. musculus'
+yeast <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/r2t_align_sp_removal/mouse_runtime_full_dist_grouped.csv", header=T, sep=',')
+yeast$species = 'S. cerevisiae'
+
+data <- rbind(arath, mouse, yeast)
+head(data)
+data$full_tech = ''
+data$full_tech [which(data$tech == 'ill')] <- 'Illumina'
+data$full_tech [which(data$tech == 'pac')] <- 'PacBio'
+data$full_tech [which(data$tech == 'nan')] <- 'ONT'
+data$approach = 'read2tree'
+data$ratio <- 0
+data_merge = merge(data, mapping_ratios, by=c('cov','species','dist'))
+#levels(data$tech) <- c("Illumina", "ONT", "PacBio")
+```
+
+##Plots
+
+```{r}
+data_merge$time_taken[data_merge$step == 'mapping'] = data_merge$time_taken[data_merge$step == 'mapping'] * 4 / 3600
+data_map <- data_merge[which(data_merge$step =='mapping'),]
+head(data_map)
+```
+
+```{r}
+assembly_data <- read.csv("~/Downloads/benchmark_reads - assembly_timings.csv", header=T, sep=',')
+assembly_data$merge_time <- (assembly_data$cpu_time_all + assembly_data$assembly_time)  / 3600
+assembly_data$full_species = ''
+assembly_data$full_species[which(assembly_data$species == 'arath')] <- 'A. thaliana'
+assembly_data$full_species[which(assembly_data$species == 'yeast')] <- 'S. cerevisiae'
+assembly_data$full_species[which(assembly_data$species == 'mouse')] <- 'M. musculus'
+assembly_data$approach = 'Assembly'
+assembly_data$coverage = as.double(assembly_data$coverage)
+head(assembly_data)
+
+all_data <- data.frame(time = c(assembly_data$merge_time, data_map$time_taken), cov= c(as.character(assembly_data$coverage), as.character(data_map$cov)), species= c(assembly_data$full_species, data_map$species), dist= c(as.character(assembly_data$dist), as.character(data_map$dist)), tech= c(as.character(assembly_data$technology), data_map$full_tech), approach= c(as.character(assembly_data$approach), data_map$approach))
+```
+
+```{r}
+#data$time_taken[data$step == 'rest'] = data$time_taken[data$step == 'rest'] / 3600
+all_data <- all_data[order(all_data$cov),]
+all_data$cov <- factor(all_data$cov, levels = c(0.2,0.5,1,5,10,20)) # for canva data
+cc <- scales::seq_gradient_pal("#dd3e54", "#6be585", "Lab")(seq(0,1,length.out=7))
+all_data <- all_data[order(all_data$dist),]
+all_data$dist <- factor(all_data$dist, levels = c(0, 1, 2, 3, 4, 5, 6)) # for canva data
+#data$cov <- factor(data$cov, levels = c(0.2,0.5,1,5,10,20)) # for mouse data
+#new_data = data[which(data$seq_length_ratio>0.20),]
+all_data$tech[which(all_data$tech=='PacBIO')] <- 'PacBio'
+
+p <- ggplot(all_data, aes(dist, time, group=interaction(approach, cov)))  
+p <- p + geom_line(color='grey') + geom_point(aes(shape=cov, color=approach), size=2)
+p <- p + scale_y_log10()
+p <- p + facet_grid(tech ~ species)
+p <- p + scale_color_manual(values=c('red', "#56B4E9"), name="Approach")
+#p <- p + scale_color_manual(values=cc, name='Distance')
+p <- p + scale_shape_manual(values=c(3, 4, 8, 15, 16, 17), name='Coverage')
+#p <- p + scale_colour_gradient(low = "orange", high = "red")
+#p <- p + theme_Publication(base_size=12)
+#p <- p + theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.title=element_text(hjust = 1))
+p <- p + theme_bw()
+p <- p + theme(legend.position="bottom")
+p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Species removal level")
+p <- p + ylab("Time [hr]")
+#p <- p + ylim(0,1)
+#pdf("~/Desktop/run.pdf", width = 10, height = 8, useDingbats=FALSE)
+p
+# ggsave(plot=p,height=5,width=6,dpi=200, filename="~/Desktop/paper/figure3/fig3B.pdf", useDingbats=FALSE)
+```

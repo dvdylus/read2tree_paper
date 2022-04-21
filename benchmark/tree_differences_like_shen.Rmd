@@ -1,0 +1,309 @@
+---
+title: "Blast analysis of species removal"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+Given a reference tree we ran the final step of r2t using the '--remove_species_mapping' parameter increasing at each iteration the number of species not to be considered to reconstruct our sequence. Therefore at each iteration the closest neighbour is more distantly related to the species we are trying to map. We then use our obtained sequences and blast them against their original OGs containing all the sequences including the species we are trying to map.  
+
+
+```{r echo=FALSE}
+library(ggplot2)
+library(plyr)
+#library(dplyr)
+library(reshape2)
+library(base)
+library(grid)
+library(gtable)
+library(viridis)
+theme_set(
+  theme_light() + theme(legend.position = "top")
+  )
+# source("/Volumes/Recovery/Dropbox/dessimoz/research/opt/R-pLIBS/ggplot_pLIB.R")
+source("https://raw.githubusercontent.com/teunbrand/ggnomics/standalone-facet_nested/R/facet_nested.R")
+
+## Gives count, mean, standard deviation, standard error of the mean, and confidence interval (default 95%).
+##   data: a data frame.
+##   measurevar: the name of a column that contains the variable to be summariezed
+##   groupvars: a vector containing names of columns that contain grouping variables
+##   na.rm: a boolean that indicates whether to ignore NA's
+##   conf.interval: the percent range of the confidence interval (default is 95%)
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE, conf.interval=.95, .drop=TRUE) {
+    library(plyr)
+
+    # New version of length which can handle NA's: if na.rm==T, don't count them
+    length2 <- function (x, na.rm=FALSE) {
+        if (na.rm) sum(!is.na(x))
+        else       length(x)
+    }
+
+    # This does the summary. For each group's data frame, return a vector with
+    # N, mean, and sd
+    datac <- ddply(data, groupvars, .drop=.drop,
+      .fun = function(xx, col) {
+        c(N    = length2(xx[[col]], na.rm=na.rm),
+          mean = mean   (xx[[col]], na.rm=na.rm),
+          sd   = sd     (xx[[col]], na.rm=na.rm)
+        )
+      },
+      measurevar
+    )
+
+    # Rename the "mean" column    
+    #datac <- rename(datac, c("mean" = measurevar))
+
+    datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+
+    # Confidence interval multiplier for standard error
+    # Calculate t-statistic for confidence interval: 
+    # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+    ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+    datac$ci <- datac$se * ciMult
+
+    return(datac)
+}
+
+OverlappingStripLabels = function(plot) {
+
+  # Get the ggplot grob
+  pg = ggplotGrob(plot)
+
+  ### Collect some information about the strips from the plot
+  # Get a list of strips
+  stripr = lapply(grep("strip-r", pg$layout$name), function(x) {pg$grobs[[x]]})
+
+  stript = lapply(grep("strip-t", pg$layout$name), function(x) {pg$grobs[[x]]})
+
+  # Number of strips
+  NumberOfStripsr = sum(grepl(pattern = "strip-r", pg$layout$name))
+  NumberOfStripst = sum(grepl(pattern = "strip-t", pg$layout$name))
+
+  # Number of columns
+  NumberOfCols = length(stripr[[1]])
+  NumberOfRows = length(stript[[1]])
+
+  # Panel spacing
+  plot_theme <- function(p) {
+    plyr::defaults(p$theme, theme_get())
+  }
+  PanelSpacing = plot_theme(plot)$panel.spacing
+
+  # Map the boundaries of the new strips
+  Nlabelr = vector("list", NumberOfCols)
+  mapr = vector("list", NumberOfCols)
+  for(i in 1:NumberOfCols) {
+
+    for(j in 1:NumberOfStripsr) {
+      Nlabelr[[i]][j] = getGrob(grid.force(stripr[[j]]$grobs[[i]]), gPath("GRID.text"), grep = TRUE)$label
+    }
+
+    mapr[[i]][1] = TRUE
+    for(j in 2:NumberOfStripsr) {
+      mapr[[i]][j] = as.character(Nlabelr[[i]][j]) != as.character(Nlabelr[[i]][j-1])#Nlabelr[[i]][j] != Nlabelr[[i]][j-1]
+    }
+  }
+
+  # Map the boundaries of the new strips
+  Nlabelt = vector("list", NumberOfRows)
+  mapt = vector("list", NumberOfRows)
+  for(i in 1:NumberOfRows) {
+
+    for(j in 1:NumberOfStripst) {
+      Nlabelt[[i]][j] = getGrob(grid.force(stript[[j]]$grobs[[i]]), gPath("GRID.text"), grep = TRUE)$label
+    }
+
+    mapt[[i]][1] = TRUE
+    for(j in 2:NumberOfStripst) {
+      mapt[[i]][j] = as.character(Nlabelt[[i]][j]) != as.character(Nlabelt[[i]][j-1])#Nlabelt[[i]][j] != Nlabelt[[i]][j-1]
+    }
+  }
+
+
+  ## Construct gtable to contain the new strip
+  newStripr  = gtable(heights = unit.c(rep(unit.c(unit(1, "null"), PanelSpacing), NumberOfStripsr-1), unit(1, "null")), 
+                     widths = stripr[[1]]$widths)
+  ## Populate the gtable  
+  seqTop = list()
+  for(i in NumberOfCols:1) {  
+    Top = which(mapr[[i]] == TRUE)
+    seqTop[[i]] = if(i == NumberOfCols) 2*Top - 1 else  sort(unique(c(seqTop[[i+1]], 2*Top - 1)))  
+    seqBottom = c(seqTop[[i]][-1] -2, (2*NumberOfStripsr-1))
+    newStripr = gtable_add_grob(newStripr, lapply(stripr[(seqTop[[i]]+1)/2], function(x) x[[1]][[i]]), l = i, t = seqTop[[i]], b = seqBottom)
+  }
+
+  mapt <- mapt[NumberOfRows:1]
+  Nlabelt <- Nlabelt[NumberOfRows:1]
+  ## Do the same for top facets
+  newStript  = gtable(heights = stript[[1]]$heights,
+                      widths = unit.c(rep(unit.c(unit(1, "null"), PanelSpacing), NumberOfStripst-1), unit(1, "null")))
+  seqTop = list()
+  for(i in NumberOfRows:1) {  
+    Top = which(mapt[[i]] == TRUE)
+    seqTop[[i]] = if(i == NumberOfRows) 2*Top - 1 else  sort(unique(c(seqTop[[i+1]], 2*Top - 1)))  
+    seqBottom = c(seqTop[[i]][-1] -2, (2*NumberOfStripst-1))
+    # newStript = gtable_add_grob(newStript, lapply(stript[(seqTop[[i]]+1)/2], function(x) x[[1]][[i]]), l = i, t = seqTop[[i]], b = seqBottom)
+    newStript = gtable_add_grob(newStript, lapply(stript[(seqTop[[i]]+1)/2], function(x) x[[1]][[(NumberOfRows:1)[i]]]), t = (NumberOfRows:1)[i], l = seqTop[[i]], r = seqBottom)
+  }
+
+  ## Put the strip into the plot
+  # Get the locations of the original strips
+  posr = subset(pg$layout, grepl("strip-r", pg$layout$name), t:r)
+  post = subset(pg$layout, grepl("strip-t", pg$layout$name), t:r)
+
+  ## Use these to position the new strip
+  pgNew = gtable_add_grob(pg, newStripr, t = min(posr$t), l = unique(posr$l), b = max(posr$b))
+  pgNew = gtable_add_grob(pgNew, newStript, l = min(post$l), r = max(post$r), t=unique(post$t))
+  grid.draw(pgNew)
+
+  return(pgNew)
+}
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+```{r}
+mouse <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/like_shen/mouse_tree_compare_assembly-like_shen_all.csv", header=T, sep=',')
+dim(mouse)
+yeast <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/like_shen/yeast_tree_compare_assembly-like_shen_all.csv", header=T, sep=',')
+dim(yeast)
+arath <- read.csv("/Volumes/Recovery/projects/r2t/benchmark/like_shen/arath_tree_compare_assembly-like_shen_all.csv", header=T, sep=',')
+dim(arath)
+mouse$species <- 'M. musculus'
+yeast$species <- 'S. cerevisiae'
+arath$species <- 'A. thaliana'
+
+data <- rbind(mouse,yeast,arath)
+
+# data$appraoch <- 'r2t'
+
+data <- data[order(data$dist),]
+data$inode_dist <- factor(data$dist, levels = c(0,1,2,3,4,5,6)) # for data data
+head(data)
+```
+
+
+# Plot all removal distances for coverage levels
+
+```{r}
+data <- data[order(data$coverage),]
+data$coverage <- factor(data$coverage, levels = c(0.2,0.5,1,5,10,20)) # for canva data
+data$dist <- factor(data$dist, levels = c(0,1,2,3,4,5,6)) # for canva data
+data_r2t <- data[data$method == 'r2t',]
+#data$gcov <- as.character(data$gcov)
+p <- ggplot(data_r2t, aes(dist, nrf, shape=coverage, color=dist)) + geom_jitter(aes(color=same_neighbour), height = 0.005, alpha=1)
+#p <- ggplot(data_merge, aes(dist_to_remain_neigh, proportions, group=interaction(bin, gcov), shape=gcov)) + geom_line(color='darkgrey')  + geom_point(aes(colour=inode_dist))
+p <- p + facet_grid(technology~species)
+#p <- p + scale_x_continuous(trans = 'log2')
+p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="Correct neighbour")
+#p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="bin")
+p <- p + theme_bw()
+#p <- p + theme(legend.position="bottom")
+#p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Species removed")
+p <- p + ylab("Topological similarity to reference")
+# pdf("~/projects/r2t/paper/figure2/tree_OGs_likeshen.pdf", width = 8, height = 6, useDingbats=FALSE)
+p
+```
+
+# Comparison with assembly
+
+```{r}
+data_assemblies <- data[which(data$method == 'assembly'),]
+head(data_assemblies)
+data_tmp <- data_assemblies
+```
+
+```{r}
+data <- data[order(data$coverage),]
+data$coverage <- factor(data$coverage, levels = c(0.2,0.5,1,5,10,20)) # for canva data
+data$dist <- factor(data$dist, levels = c(0,1,2,3,4,5,6)) # for canva data
+#data$gcov <- as.character(data$gcov)
+p <- ggplot(data, aes(dist, rf, shape=coverage)) + geom_jitter(aes(color=method), height = 0.005, alpha=1, size=2)
+#p <- ggplot(data_merge, aes(dist_to_remain_neigh, proportions, group=interaction(bin, gcov), shape=gcov)) + geom_line(color='darkgrey')  + geom_point(aes(colour=inode_dist))
+p <- p + facet_grid(technology~species)
+#p <- p + scale_x_continuous(trans = 'log2')
+p <- p + scale_color_manual(values=c('red', "#56B4E9"), name="Approach")
+p <- p + scale_shape_manual(values=c(3, 4, 8, 15, 16, 17), name='Coverage')
+#p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="bin")
+p <- p + theme_bw()
+#p <- p + theme(legend.position="bottom")
+#p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Species removal level")
+p <- p + ylab("Topological similarity to reference")
+p <- p + theme(legend.position="bottom")
+# pdf("~/projects/r2t/paper/figure2/tree_OGs_likeshen.pdf", width = 8, height = 6, useDingbats=FALSE)
+p
+ggsave(plot=p,height=5,width=6,dpi=200, filename="~/Desktop/paper/figure3/fig3D.pdf", useDingbats=FALSE)
+```
+
+
+
+```{r}
+data_a <- data_assemblies[
+  with(data_assemblies, order(coverage, dist, technology, species)),
+]
+data_r <- data_r2t[
+  with(data_r2t, order(coverage, dist, technology, species)),
+]
+
+data_diff <- data.frame(coverage = data_r$coverage, technology = data_r$technology, species = data_r$species, dist = data_r$dist, nrf_diff = data_r$nrf - data_a$nrf, same_neighbour = data_a$same_neighbour)
+data_diff$better <- 'r2t better'
+data_diff$better[which(data_diff$nrf_diff > 0)] <- 'assembly better'
+data_diff$better[which(data_a$nrf==1)] <- 'only r2t'
+data_diff$better[which(data_diff$nrf_diff == 0)] <- 'equal'
+dim(data_a)
+dim(data_r)
+
+p <- ggplot(data_diff, aes(dist, nrf_diff, shape=coverage))   + geom_jitter(aes(color=better), height = 0.005, width=0.4, size =2)
+#p <- ggplot(data_merge, aes(dist_to_remain_neigh, proportions, group=interaction(bin, gcov), shape=gcov)) + geom_line(color='darkgrey')  + geom_point(aes(colour=inode_dist))
+p <- p + facet_grid(technology~species)
+#p <- p + scale_x_continuous(trans = 'log2')
+p <- p + scale_color_manual(values=c("red", "#999999",'darkblue' , "#56B4E9"), name="Group")
+# p <- p + scale_shape_manual(values=c(12, 21), name="Approach")
+p <- p + scale_shape_manual(values=c(3, 4, 8, 15, 16, 17), name='Coverage')
+
+#p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="bin")
+p <- p + theme_bw()
+#p <- p + theme(legend.position="bottom")
+#p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("Species removal level")
+p <- p + ylab("Difference betwen normalized rf") #\n r2t-ref vs assembly-ref
+p <- p + theme(legend.position="bottom")
+
+# pdf("~/projects/r2t/paper/figure3/nrf_dist_read2tree_vs_assembly.pdf", width = 8, height = 6, useDingbats=FALSE)
+p
+ggsave(plot=p,height=5,width=6,dpi=200, filename="~/Desktop/paper/figure3/fig3C.pdf", useDingbats=FALSE)
+```
+
+
+```{r}
+pre_recal <- read.csv('~/Desktop/precision_recall_90.csv')
+pre_recal$dist <- factor(pre_recal$dist, levels = c(0,1,2,3,4,5,6)) # for data data
+pre_recal$coverage <- factor(pre_recal$coverage, levels = c(0.2,0.5,1,5,10,20)) # for data data
+
+pre_recal$full_species <- 'M. musculus'
+pre_recal$full_species[pre_recal$species == 'yeast'] <- 'S. cerevisiae'
+pre_recal$full_species[pre_recal$species == 'arath'] <- 'A. thaliana'
+
+to_plot <- pre_recal[which(pre_recal$precision > 0.5),] #pre_recal[which(!(pre_recal$recall== 0 & pre_recal$precision == 0)),]
+p <- ggplot(to_plot, aes(recall, precision, shape=coverage)) + geom_point(aes(colour=dist), size=2)
+#p <- ggplot(data_merge, aes(dist_to_remain_neigh, proportions, group=interaction(bin, gcov), shape=gcov)) + geom_line(color='darkgrey')  + geom_point(aes(colour=inode_dist))
+p <- p + facet_grid(technology~full_species)
+# p <- p + scale_y_continuous(trans = 'log2')
+# p <- p + scale_color_manual(values=c("red", "darkgreen"), name="Correct neighbour")
+p <- p + scale_color_viridis(discrete = TRUE)
+p <- p + scale_shape_manual(values=c(3, 4, 8, 15, 16, 17), name='Coverage')
+#p <- p + scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"), name="bin")
+p <- p + theme_bw()
+#p <- p + theme(legend.position="bottom")
+#p <- p + theme(axis.text.x = element_text(), legend.text = element_text(hjust = 1))
+p <- p + xlab("recall")
+p <- p + ylab("precision")
+# pdf("~/Desktop/paper/figure2/pres_recal-90.pdf", width = 8, height = 6, useDingbats=FALSE)
+p
+# ggsave(plot=p,height=5,width=6,dpi=200, filename="~/Desktop/paper/figure2/pres_recal-90.pdf", useDingbats=FALSE)
+
+```
