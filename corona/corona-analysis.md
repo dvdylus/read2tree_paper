@@ -46,7 +46,7 @@ Next, we download as many sars-cov-2 samples as useful. We obtained sra accessio
   and extract the column with the SRA accession from that file. The file `used_accessions.txt` contains the file with the accessions we used in the analysis.
 - download and convert sra-accession runs with
   ```bash
-  python $paper_repo/corona/sradownloader --nogeo --noena --outdir reads used_accession.txt --threads 8
+  python $paper_repo/corona/sradownloader --nogeo --noena --outdir reads data/used_accession.txt --threads 8
   ```
 - clean the results: remove single paired-end read files (not ending in _1|2.fastq.gz), any broken file, etc from the `reads` subdirectory
 
@@ -77,7 +77,9 @@ We run read2tree on a slurm cluster. The following steps explain how to map all 
   python $paper_repo/corona/relabel_msa.py --out trimmed_concat_merge_dna_nice.phy --oma-map ../oma-species.txt --nextstrain ../subset.metadata.txt trimmed_concat_merge_dna.phy
   ```
 
-- Reconstruct species phylogeny using FastTree:
+- Reconstruct species phylogeny using IQtree:
   ```shell
-  FastTree -nt trimmed_concat_merge_dna_nice.phy > corona.trimmed_dna.nwk
+  iqtree -T 8 -m GTR -ninit 2 -me 0.05 -s trimmed_concat_merge_dna_nice.phy
   ```
+
+  
