@@ -1,5 +1,6 @@
 import Bio.AlignIO
 import Bio.Align
+from Bio.SeqRecord import SeqRecord
 import collections
 import math
 
@@ -26,15 +27,19 @@ def count_nucs(data):
     return valid
 
 def trim(msa, min_residue):
-    keep = []
-    for col in range(msa.get_alignment_length()):
-        if count_nucs(msa[:,col]) >= min_residue:
-            keep.append(col)
-    print(len(keep))
-    trimmed = msa[:, keep[0]:keep[0]+1]
-    for k in keep[1:]:
-        trimmed = trimmed + msa[:, k:k+1]
-    return keep, trimmed        
+    colcnt = [0] * msa.get_alignment_length()
+    for rec in msa:
+        for pos, nuc in enumerate(rec.seq):
+            if nuc in 'ATCGN':
+                colcnt[pos] += 1
+
+    keep = [i for i in range(msa.get_alignment_length()) if colcnt[i] > min_residue]
+    trimmed = []
+    for rec in msa:
+        seq = "".join([nuc for c, nuc in enumerate(rec.seq) if colcnt[c] >= min_residue])
+        trimmed.append(SeqRecord(seq, id=rec.id))
+    trimmed = Bio.Align.MultipleSeqAlignment(trimmed)
+    return keep, trimmed
 
 def filter_taxa(msa, min_residue):
     filtered = Bio.Align.MultipleSeqAlignment(filter(lambda taxon: count_nucs(taxon) > min_residue, msa))
