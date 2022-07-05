@@ -26,12 +26,15 @@ def count_nucs(data):
     valid = sum(c[x] for x in ('ATCGN'))
     return valid
 
-def trim(msa, min_residue):
+def trim(msa, min_residue, cnt_scaler=None):
+    if cnt_scaler is None:
+        cnt_scaler = [0, 1]
     colcnt = [0] * msa.get_alignment_length()
-    for rec in msa:
+    for c, rec in enumerate(msa):
+        inc = 1 if c >= cnt_scaler[0] else int(cnt_scaler[1])
         for pos, nuc in enumerate(rec.seq):
             if nuc in 'ATCGN':
-                colcnt[pos] += 1
+                colcnt[pos] += inc
 
     keep = [i for i in range(msa.get_alignment_length()) if colcnt[i] > min_residue]
     trimmed = []
@@ -55,6 +58,7 @@ if __name__ == "__main__":
     parser.add_argument('alignment', help="path to multiple sequence alignment")
     parser.add_argument('--min-per-col', type=int, help="Min nr of taxa that need to have a nuc at a column to be included. Defaults to ceil(nr_taxa*0.3)")
     parser.add_argument('--min-res-per-species', default=400, type=int, help="Minimum number of residues for a taxon in the trimmed alignment to not be kicked out. Defaults to 400")
+    parser.add_argument('--scale-orig', nargs=2, type=int, default=[0, 1], help="scale the first (reference genomes) counts with a certain factor. useful if many very similar reads are placed on a much more diverse reference set")
     parser.add_argument('--out', help="Outfile of trimmed alignment")
     conf = parser.parse_args()
 
@@ -66,7 +70,7 @@ if __name__ == "__main__":
 
     print("Loaded MSA ({}x{}). Filter cols with less than {} residue"
           .format(len(msa), msa.get_alignment_length(), conf.min_per_col))
-    keep, trimmed_msa = trim(msa, conf.min_per_col)
+    keep, trimmed_msa = trim(msa, conf.min_per_col, cnt_scaler=conf.scale_orig)
     print("  after filtering columns: {}x{}".format(len(trimmed_msa), trimmed_msa.get_alignment_length()))
     filtered = filter_taxa(trimmed_msa, conf.min_res_per_species)
     print("  after filtering taxa: {}x{}".format(len(filtered), filtered.get_alignment_length()))
